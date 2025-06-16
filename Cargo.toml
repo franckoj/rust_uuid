@@ -1,0 +1,17 @@
+[package]
+name = "rust_uuid"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_uuid"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.20", features = ["extension-module"] }
+uuid = { version = "1.6", features = ["v1", "v3", "v4", "v5", "fast-rng", "macro-diagnostics"] }
+md5 = "0.7"
+sha1 = "0.10"
+
+[build-dependencies]
+pyo3-build-config = "0.20"

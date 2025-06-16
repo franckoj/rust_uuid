@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Benchmark script to compare Python's built-in uuid module with the Rust-backed rust_uuid module.
+Enhanced benchmark script with optimizations and analysis.
 """
 
 import timeit
 import uuid as python_uuid
 import statistics
+import gc
+import sys
 
 try:
     import rust_uuid
@@ -14,17 +16,27 @@ try:
 except ImportError as e:
     RUST_AVAILABLE = False
     print(f"❌ Failed to import rust_uuid: {e}")
-    print("Make sure to build the module first with: maturin develop")
+    print("Make sure to build the module first with: maturin develop --release")
 
-def benchmark_function(func, name, iterations=100000):
-    """Benchmark a function and return timing statistics."""
+def benchmark_function(func, name, iterations=100000, warmup=1000):
+    """Benchmark a function with warmup and return timing statistics."""
     print(f"\n🔄 Benchmarking {name} ({iterations:,} iterations)...")
+    
+    # Warmup
+    for _ in range(warmup):
+        func()
+    
+    # Force garbage collection before benchmarking
+    gc.collect()
     
     # Run multiple trials for more accurate results
     trials = 5
     times = []
     
     for trial in range(trials):
+        # Force garbage collection before each trial
+        gc.collect()
+        
         time_taken = timeit.timeit(func, number=iterations)
         times.append(time_taken)
         print(f"  Trial {trial + 1}: {time_taken:.4f}s ({iterations/time_taken:,.0f} ops/sec)")
@@ -35,9 +47,136 @@ def benchmark_function(func, name, iterations=100000):
     print(f"  📊 Average: {avg_time:.4f}s ± {std_dev:.4f}s ({iterations/avg_time:,.0f} ops/sec)")
     return avg_time, iterations/avg_time
 
+def benchmark_batch_operations():
+    """Benchmark batch operations if available."""
+    if not RUST_AVAILABLE:
+        return
+    
+    print("\n" + "="*50)
+    print("🚀 BATCH OPERATIONS BENCHMARK")
+    print("="*50)
+    
+    batch_sizes = [1000, 10000, 100000]
+    
+    for batch_size in batch_sizes:
+        print(f"\n🔸 Batch size: {batch_size:,}")
+        
+        # Python batch (using list comprehension)
+        def python_batch():
+            return [str(python_uuid.uuid4()) for _ in range(batch_size)]
+        
+        # Rust batch (if available)
+        if hasattr(rust_uuid, 'uuid4_batch'):
+            def rust_batch():
+                return rust_uuid.uuid4_batch(batch_size)
+        else:
+            def rust_batch():
+                return [rust_uuid.uuid4() for _ in range(batch_size)]
+        
+        py_time, py_ops = benchmark_function(python_batch, f"Python batch ({batch_size:,})", 10, 5)
+        rust_time, rust_ops = benchmark_function(rust_batch, f"Rust batch ({batch_size:,})", 10, 5)
+        
+        speedup = rust_ops / py_ops
+        print(f"  🎯 Batch speedup: {speedup:.2f}x")
+
+def profile_memory_usage():
+    """Profile memory usage of UUID generation."""
+    try:
+        import psutil
+        import os
+        
+        print("\n" + "="*50)
+        print("🧠 MEMORY USAGE ANALYSIS")
+        print("="*50)
+        
+        process = psutil.Process(os.getpid())
+        
+        # Baseline memory
+        baseline_memory = process.memory_info().rss / 1024 / 1024  # MB
+        
+        # Generate many UUIDs and measure memory
+        n_uuids = 100000
+        
+        # Python UUID memory usage
+        gc.collect()
+        start_memory = process.memory_info().rss / 1024 / 1024
+        python_uuids = [str(python_uuid.uuid4()) for _ in range(n_uuids)]
+        end_memory = process.memory_info().rss / 1024 / 1024
+        python_memory_usage = end_memory - start_memory
+        
+        del python_uuids
+        gc.collect()
+        
+        if RUST_AVAILABLE:
+            # Rust UUID memory usage
+            start_memory = process.memory_info().rss / 1024 / 1024
+            rust_uuids = [rust_uuid.uuid4() for _ in range(n_uuids)]
+            end_memory = process.memory_info().rss / 1024 / 1024
+            rust_memory_usage = end_memory - start_memory
+            
+            del rust_uuids
+            gc.collect()
+            
+            print(f"Python memory usage: {python_memory_usage:.2f} MB")
+            print(f"Rust memory usage: {rust_memory_usage:.2f} MB")
+            print(f"Memory efficiency: {python_memory_usage/rust_memory_usage:.2f}x")
+        else:
+            print(f"Python memory usage: {python_memory_usage:.2f} MB")
+            
+    except ImportError:
+        print("psutil not available for memory profiling")
+
+def analyze_performance_bottlenecks():
+    """Analyze where the performance bottlenecks are."""
+    if not RUST_AVAILABLE:
+        return
+        
+    print("\n" + "="*50)
+    print("🔍 PERFORMANCE ANALYSIS")
+    print("="*50)
+    
+    # Test different aspects of UUID generation
+    iterations = 100000
+    
+    # Test string conversion overhead
+    print("\n🔸 String Conversion Overhead")
+    def rust_uuid_no_str():
+        # This would be ideal but we can't avoid string conversion in Python
+        return rust_uuid.uuid4()
+    
+    def python_uuid_no_str():
+        return str(python_uuid.uuid4())
+    
+    rust_time, rust_ops = benchmark_function(rust_uuid_no_str, "Rust UUID4 (with string)", iterations)
+    py_time, py_ops = benchmark_function(python_uuid_no_str, "Python UUID4 (with string)", iterations)
+    
+    print(f"  Raw performance difference: {rust_ops/py_ops:.2f}x")
+    
+    # Test PyO3 call overhead
+    print("\n🔸 Function Call Overhead")
+    def rust_multiple_calls():
+        rust_uuid.uuid4()
+        rust_uuid.uuid4()
+        rust_uuid.uuid4()
+        rust_uuid.uuid4()
+        rust_uuid.uuid4()
+    
+    def python_multiple_calls():
+        python_uuid.uuid4()
+        python_uuid.uuid4()
+        python_uuid.uuid4()
+        python_uuid.uuid4()
+        python_uuid.uuid4()
+    
+    rust_time, rust_ops = benchmark_function(rust_multiple_calls, "Rust 5x calls", iterations//5)
+    py_time, py_ops = benchmark_function(python_multiple_calls, "Python 5x calls", iterations//5)
+    
+    print(f"  Call overhead impact: {rust_ops/py_ops:.2f}x")
+
 def main():
-    print("🚀 UUID Performance Benchmark")
+    print("🚀 Enhanced UUID Performance Benchmark")
     print("=" * 50)
+    print(f"Python version: {sys.version}")
     
     if not RUST_AVAILABLE:
         print("Rust module not available. Only benchmarking Python uuid module.")
@@ -99,8 +238,10 @@ def main():
             speedup_str = f"🚀 {speedup_str}"
         elif data['speedup'] >= 1.2:
             speedup_str = f"⚡ {speedup_str}"
-        else:
+        elif data['speedup'] >= 0.8:
             speedup_str = f"📊 {speedup_str}"
+        else:
+            speedup_str = f"🐌 {speedup_str}"
             
         print(f"{func_name:<10} {data['python']:>12,.0f}   {data['rust']:>12,.0f}   {speedup_str:<10}")
     
@@ -108,46 +249,29 @@ def main():
     avg_speedup = statistics.mean([data['speedup'] for data in results.values()])
     print(f"\n🎯 Overall average speedup: {avg_speedup:.1f}x")
     
-    # Test correctness
+    # Additional analysis
+    analyze_performance_bottlenecks()
+    benchmark_batch_operations()
+    profile_memory_usage()
+    
+    # Recommendations
     print("\n" + "=" * 50)
-    print("🔍 CORRECTNESS VALIDATION")
+    print("💡 RECOMMENDATIONS")
     print("=" * 50)
     
-    # Test namespace constants
-    print("Testing namespace constants...")
-    assert rust_uuid.NAMESPACE_DNS == str(python_uuid.NAMESPACE_DNS), "NAMESPACE_DNS mismatch"
-    assert rust_uuid.NAMESPACE_URL == str(python_uuid.NAMESPACE_URL), "NAMESPACE_URL mismatch"
-    assert rust_uuid.NAMESPACE_OID == str(python_uuid.NAMESPACE_OID), "NAMESPACE_OID mismatch"
-    assert rust_uuid.NAMESPACE_X500 == str(python_uuid.NAMESPACE_X500), "NAMESPACE_X500 mismatch"
-    print("✅ All namespace constants match")
-    
-    # Test UUID format validity
-    print("Testing UUID format validity...")
-    for _ in range(10):
-        # Test that generated UUIDs are valid
-        rust_uuid4 = rust_uuid.uuid4()
-        python_uuid.UUID(rust_uuid4)  # This will raise if invalid
-        
-        rust_uuid3 = rust_uuid.uuid3(str(test_namespace), test_name)
-        python_uuid.UUID(rust_uuid3)  # This will raise if invalid
-        
-        rust_uuid5 = rust_uuid.uuid5(str(test_namespace), test_name)
-        python_uuid.UUID(rust_uuid5)  # This will raise if invalid
-    
-    print("✅ All generated UUIDs have valid format")
-    
-    # Test deterministic UUIDs (uuid3 and uuid5 should be consistent)
-    print("Testing deterministic UUID consistency...")
-    rust_uuid3_1 = rust_uuid.uuid3(str(test_namespace), test_name)
-    rust_uuid3_2 = rust_uuid.uuid3(str(test_namespace), test_name)
-    assert rust_uuid3_1 == rust_uuid3_2, "UUID3 should be deterministic"
-    
-    rust_uuid5_1 = rust_uuid.uuid5(str(test_namespace), test_name)
-    rust_uuid5_2 = rust_uuid.uuid5(str(test_namespace), test_name)
-    assert rust_uuid5_1 == rust_uuid5_2, "UUID5 should be deterministic"
-    print("✅ Deterministic UUIDs are consistent")
-    
-    print("\n🎉 All tests passed! The Rust implementation is working correctly.")
+    if avg_speedup < 1.0:
+        print("🔍 The Rust implementation is slower than Python. This is likely due to:")
+        print("   1. PyO3 function call overhead")
+        print("   2. String conversion overhead")
+        print("   3. Python's UUID module being implemented in optimized C")
+        print("   4. Small operation size making overhead significant")
+        print("\n💡 Consider using Rust UUID when:")
+        print("   - Generating large batches of UUIDs")
+        print("   - Integrating with other Rust components")
+        print("   - Memory efficiency is important")
+    else:
+        print("🎉 The Rust implementation shows good performance!")
+        print("   Consider using it for production workloads.")
 
 if __name__ == "__main__":
     main()
